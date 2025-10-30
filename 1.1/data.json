@@ -10,5 +10,11 @@
     "name": "Headphones",
     "price": 2500,
     "category": "Electronics"
+  },
+  {
+    "id": 4,
+    "name": "Headphones",
+    "price": 2500,
+    "category": "Electronics"
   }
 ]
