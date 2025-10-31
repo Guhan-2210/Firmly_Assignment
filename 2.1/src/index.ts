@@ -68,9 +68,14 @@ app.onError((err, c) => {
 // Flush logs before worker terminates
 app.use("*", async (c, next) => {
   await next();
-  
-  // Ensure logs are flushed to R2
-  c.executionCtx.waitUntil(flushLogs());
+
+  // Immediate flush
+  c.executionCtx.waitUntil(flushLogs().catch(() => {}));
+
+  // Periodic flush (in case worker is reused)
+  c.executionCtx.waitUntil(
+    new Promise(r => setTimeout(r, 30_000)).then(() => flushLogs().catch(() => {}))
+  );
 });
 
 export default app;

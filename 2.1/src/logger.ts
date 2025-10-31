@@ -65,8 +65,8 @@ class CloudflareLogger {
     this.logBuffer = [];
 
     try {
-      const timestamp = new Date().toISOString().replace(/:/g, "-").replace(/\./g, "-");
-      const filename = `logs/${timestamp}-${Date.now()}.json`;
+      const date = new Date().toISOString().split("T")[0];
+      const filename = `logs/${date}/${Date.now()}-${crypto.randomUUID().slice(0, 8)}.jsonl`;
       const content = logsToFlush.map(entry => JSON.stringify(entry)).join("\n");
 
       await this.r2Bucket.put(filename, content, {
