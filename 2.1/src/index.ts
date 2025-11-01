@@ -1,81 +1,113 @@
-import { Hono } from "hono";
-import { cors } from "hono/cors";
+import { Router, error, json } from 'itty-router';
 import { DatabaseClient } from "../db/client";
 import { ProductModel } from "./models/product";
 import { initializeR2Logging, logger, flushLogs } from "./logger";
-import productRoutes from "./routes/productRoutes";
+import { productRoutes } from "./routes/productRoutes";
 
-type Bindings = {
+type Env = {
   DB: D1Database;
   LOGS_BUCKET: R2Bucket;
 };
 
-type Variables = {
-  db: DatabaseClient;
-  productModel: ProductModel;
+type RequestWithEnv = Request & {
+  env: Env;
+  db?: DatabaseClient;
+  productModel?: ProductModel;
+  executionCtx?: ExecutionContext;
 };
 
-const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
+const router = Router();
 
-app.use("*", cors());
+// CORS middleware
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
 
-app.use("*", async (c, next) => {
-  initializeR2Logging(c.env.LOGS_BUCKET);
-  const db = new DatabaseClient(c.env.DB);
-  c.set("db", db);
-
-  const productModel = new ProductModel(db);
-  c.set("productModel", productModel);
-
-  await next();
+router.all('*', (req: RequestWithEnv) => {
+  // Handle OPTIONS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders });
+  }
 });
 
-app.use("*", async (c, next) => {
+// Initialize DB and models middleware
+router.all('*', (req: RequestWithEnv) => {
+  initializeR2Logging(req.env.LOGS_BUCKET);
+  const db = new DatabaseClient(req.env.DB);
+  req.db = db;
+  req.productModel = new ProductModel(db);
+});
+
+// Logging middleware
+router.all('*', async (req: RequestWithEnv) => {
   const start = Date.now();
-  const method = c.req.method;
-  const path = c.req.path;
+  const method = req.method;
+  const path = new URL(req.url).pathname;
   
-  await next();
-  
-  const duration = Date.now() - start;
-  logger.info("http_request", {
-    method,
-    path,
-    status: c.res.status,
-    duration: `${duration}ms`,
-  });
+  // Store start time for later use
+  (req as any).startTime = start;
+  (req as any).requestPath = path;
 });
 
-// Routes
-app.route("/api/products", productRoutes);
+// Mount product routes
+productRoutes(router);
 
-app.get("/health", (c) => c.json({ status: "ok", timestamp: new Date().toISOString() }));
+// Health check
+router.get('/health', () => 
+  json({ status: "ok", timestamp: new Date().toISOString() })
+);
 
-// Error handler
-app.onError((err, c) => {
-  logger.error("unhandled_error", { 
-    error: err.message, 
-    stack: err.stack,
-    path: c.req.path 
-  });
-  
-  return c.json(
-    { error: err.message || "Internal server error" },
-    500
-  );
-});
+// 404 handler
+router.all('*', () => 
+  json({ error: "Not found" }, { status: 404 })
+);
 
-// Flush logs before worker terminates
-app.use("*", async (c, next) => {
-  await next();
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const req = request as RequestWithEnv;
+    req.env = env;
+    req.executionCtx = ctx;
 
-  // Immediate flush
-  c.executionCtx.waitUntil(flushLogs().catch(() => {}));
+    try {
+      const response = await router.handle(req);
+      
+      // Log request after handling
+      if ((req as any).startTime && (req as any).requestPath) {
+        const duration = Date.now() - (req as any).startTime;
+        logger.info("http_request", {
+          method: req.method,
+          path: (req as any).requestPath,
+          status: response.status,
+          duration: `${duration}ms`,
+        });
+      }
 
-  // Periodic flush (in case worker is reused)
-  c.executionCtx.waitUntil(
-    new Promise(r => setTimeout(r, 30_000)).then(() => flushLogs().catch(() => {}))
-  );
-});
+      // Add CORS headers to response
+      const corsResponse = new Response(response.body, response);
+      Object.entries(corsHeaders).forEach(([key, value]) => {
+        corsResponse.headers.set(key, value);
+      });
 
-export default app;
+      // Flush logs
+      ctx.waitUntil(flushLogs().catch(() => {}));
+      ctx.waitUntil(
+        new Promise(r => setTimeout(r, 30_000)).then(() => flushLogs().catch(() => {}))
+      );
+
+      return corsResponse;
+    } catch (err: any) {
+      logger.error("unhandled_error", { 
+        error: err.message, 
+        stack: err.stack,
+        path: new URL(req.url).pathname
+      });
+      
+      return json(
+        { error: err.message || "Internal server error" },
+        { status: 500, headers: corsHeaders }
+      );
+    }
+  }
+};

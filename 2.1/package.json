@@ -16,12 +16,12 @@
     "logs:get": "wrangler r2 object get application-logs"
   },
   "dependencies": {
-    "hono": "^3.11.7",
+    "itty-router": "^4.0.0",
     "winston": "^3.11.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20231218.0",
-    "wrangler": "^3.20.0",
+    "wrangler": "4.45.3",
     "typescript": "^5.3.3"
   }
 }
